@@ -1,17 +1,15 @@
 /*
  * parser.y — Fase 2: análisis sintáctico (Dueño: Dev 2).
  *
- * *** VERSIÓN PROVISIONAL creada por Dev 1 ***
- * Objetivo: fijar la LISTA DE TOKENS acordada (%token) y permitir compilar y
- * probar el pipeline completo (lexer → parser → semántico) mientras Dev 2
- * escribe la gramática real. La gramática de abajo solo valida:
- *     programa → includes 'int' IDENT '(' ')' bloque
- * con llaves balanceadas y cualquier secuencia de tokens dentro del bloque.
- *
- * Dev 2: reemplazar la sección de reglas por la GLC real. Conservar:
- *   - la lista de %token (con sus alias) y %union { tok; nodo; }
- *   - %locations (yylloc lo llena el lexer con línea/columna)
- *   - la variable global raiz_ast
+ * Gramática Libre de Contexto (GLC) no ambigua y LALR(1) (%expect 0) para el
+ * subconjunto de C de ccheck:
+ *   - Directivas #include y función principal int main() { ... }
+ *   - Declaraciones (int, float, char, bool) con lista de declaradores e init
+ *   - Estructuras de control: if/else (dangling-else resuelto con matched/unmatched),
+ *     while y for (con declaración local opcional en la inicialización)
+ *   - Expresiones estratificadas por precedencia y asociatividad
+ *   - Llamadas a printf() y scanf() (& restringido a argumentos de scanf)
+ *   - Sentencia return
  */
 %{
 #include <stdio.h>
@@ -26,6 +24,62 @@ int yylex(void);
 void yyerror(const char *s);
 
 Nodo *raiz_ast = NULL;
+
+/* Helpers internos para construir nodos de forma limpia y consistente. */
+static Nodo *nodo_binario(const char *nombre, Nodo *izq, Token *op, Nodo *der) {
+  Nodo *n = nodo_nuevo(nombre, izq->linea, izq->col);
+  nodo_agregar(n, izq);
+  nodo_agregar(n, nodo_hoja(op));
+  nodo_agregar(n, der);
+  return n;
+}
+
+static Nodo *nodo_unario(const char *nombre, Token *op, Nodo *expr) {
+  Nodo *n = nodo_nuevo(nombre, op->linea, op->columna);
+  nodo_agregar(n, nodo_hoja(op));
+  nodo_agregar(n, expr);
+  return n;
+}
+
+static Nodo *nodo_if_else(Token *kw_if, Token *lp, Nodo *cond, Token *rp,
+                          Nodo *rama_then, Token *kw_else, Nodo *rama_else) {
+  Nodo *n = nodo_nuevo("sent_if_else", kw_if->linea, kw_if->columna);
+  nodo_agregar(n, nodo_hoja(kw_if));
+  nodo_agregar(n, nodo_hoja(lp));
+  nodo_agregar(n, cond);
+  nodo_agregar(n, nodo_hoja(rp));
+  nodo_agregar(n, rama_then);
+  nodo_agregar(n, nodo_hoja(kw_else));
+  nodo_agregar(n, rama_else);
+  return n;
+}
+
+static Nodo *nodo_while(Token *kw_w, Token *lp, Nodo *cond, Token *rp,
+                        Nodo *cuerpo) {
+  Nodo *n = nodo_nuevo("sent_while", kw_w->linea, kw_w->columna);
+  nodo_agregar(n, nodo_hoja(kw_w));
+  nodo_agregar(n, nodo_hoja(lp));
+  nodo_agregar(n, cond);
+  nodo_agregar(n, nodo_hoja(rp));
+  nodo_agregar(n, cuerpo);
+  return n;
+}
+
+static Nodo *nodo_for(Token *kw_f, Token *lp, Nodo *init, Token *s1,
+                      Nodo *cond, Token *s2, Nodo *act, Token *rp,
+                      Nodo *cuerpo) {
+  Nodo *n = nodo_nuevo("sent_for", kw_f->linea, kw_f->columna);
+  nodo_agregar(n, nodo_hoja(kw_f));
+  nodo_agregar(n, nodo_hoja(lp));
+  nodo_agregar(n, init);
+  nodo_agregar(n, nodo_hoja(s1));
+  nodo_agregar(n, cond);
+  nodo_agregar(n, nodo_hoja(s2));
+  nodo_agregar(n, act);
+  nodo_agregar(n, nodo_hoja(rp));
+  nodo_agregar(n, cuerpo);
+  return n;
+}
 %}
 
 %code requires {
@@ -36,6 +90,7 @@ Nodo *raiz_ast = NULL;
 %locations
 %define parse.error custom
 %define parse.lac full
+%define parse.trace
 %expect 0
 
 %union {
@@ -44,7 +99,6 @@ Nodo *raiz_ast = NULL;
 }
 
 /* ===================== LISTA ÚNICA DE TOKENS (Dev 1 + Dev 2) ============= */
-/* El alias entre comillas se usa en los mensajes de error sintáctico. */
 %token <tok> KW_INT     "'int'"
 %token <tok> KW_FLOAT   "'float'"
 %token <tok> KW_CHAR    "'char'"
@@ -94,16 +148,24 @@ Nodo *raiz_ast = NULL;
 %token <tok> DELIM_RBRACE "'}'"
 /* ========================================================================= */
 
-%type <nodo> programa includes bloque items item tok_otro
+%type <nodo> programa includes bloque lista_elementos elemento
+%type <nodo> declaracion declaracion_sin_pyc tipo lista_declaradores declarador
+%type <nodo> sentencia sent_emparejada sent_no_emparejada sent_simple
+%type <nodo> sent_expresion sent_return
+%type <nodo> sent_printf opt_args_printf lista_args_printf arg_printf
+%type <nodo> sent_scanf opt_args_scanf lista_args_scanf arg_scanf
+%type <nodo> for_init for_cond for_act
+%type <nodo> expresion exp_asignacion op_asignacion
+%type <nodo> exp_or exp_and exp_igualdad exp_relacional
+%type <nodo> exp_aditiva exp_multiplicativa exp_unaria exp_primaria
 
-/* Al abortar por error, Bison libera los subárboles que quedaron en la pila.
-   OJO: Bison también "descarta" el símbolo inicial al aceptar; raiz_ast no se
-   libera aquí (lo libera main.c). */
 %destructor { if ($$ != raiz_ast) nodo_liberar($$); } <nodo>
 
 %start programa
 
 %%
+
+/* ======================== Estructura del programa ======================== */
 
 programa
   : includes KW_INT IDENT DELIM_LPAREN DELIM_RPAREN bloque {
@@ -124,7 +186,7 @@ includes
   ;
 
 bloque
-  : DELIM_LBRACE items DELIM_RBRACE {
+  : DELIM_LBRACE lista_elementos DELIM_RBRACE {
       $$ = nodo_nuevo("bloque", @1.first_line, @1.first_column);
       nodo_agregar($$, nodo_hoja($1));
       nodo_agregar($$, $2);
@@ -132,46 +194,324 @@ bloque
     }
   ;
 
-items
-  : %empty      { $$ = nodo_nuevo("items", 0, 0); }
-  | items item  { $$ = $1; nodo_agregar($$, $2); }
+lista_elementos
+  : %empty                   { $$ = nodo_nuevo("lista_elementos", 0, 0); }
+  | lista_elementos elemento { $$ = $1; nodo_agregar($$, $2); }
   ;
 
-item
-  : bloque    { $$ = $1; }
-  | tok_otro  { $$ = $1; }
+elemento
+  : declaracion { $$ = $1; }
+  | sentencia   { $$ = $1; }
   ;
 
-/* Cualquier token salvo llaves y #include (provisional). */
-tok_otro
-  : KW_INT { $$ = nodo_hoja($1); } | KW_FLOAT { $$ = nodo_hoja($1); }
-  | KW_CHAR { $$ = nodo_hoja($1); } | KW_BOOL { $$ = nodo_hoja($1); }
-  | KW_IF { $$ = nodo_hoja($1); } | KW_ELSE { $$ = nodo_hoja($1); }
-  | KW_WHILE { $$ = nodo_hoja($1); } | KW_FOR { $$ = nodo_hoja($1); }
-  | KW_SCANF { $$ = nodo_hoja($1); } | KW_PRINTF { $$ = nodo_hoja($1); }
-  | KW_RETURN { $$ = nodo_hoja($1); }
-  | IDENT { $$ = nodo_hoja($1); } | LIT_INT { $$ = nodo_hoja($1); }
-  | LIT_FLOAT { $$ = nodo_hoja($1); } | LIT_CHAR { $$ = nodo_hoja($1); }
-  | LIT_STRING { $$ = nodo_hoja($1); } | LIT_BOOL { $$ = nodo_hoja($1); }
-  | OP_PLUS { $$ = nodo_hoja($1); } | OP_MINUS { $$ = nodo_hoja($1); }
-  | OP_MUL { $$ = nodo_hoja($1); } | OP_DIV { $$ = nodo_hoja($1); }
-  | OP_MOD { $$ = nodo_hoja($1); } | OP_ASSIGN { $$ = nodo_hoja($1); }
-  | OP_ADD_ASSIGN { $$ = nodo_hoja($1); } | OP_SUB_ASSIGN { $$ = nodo_hoja($1); }
-  | OP_MUL_ASSIGN { $$ = nodo_hoja($1); } | OP_DIV_ASSIGN { $$ = nodo_hoja($1); }
-  | OP_EQ { $$ = nodo_hoja($1); } | OP_NE { $$ = nodo_hoja($1); }
-  | OP_LT { $$ = nodo_hoja($1); } | OP_GT { $$ = nodo_hoja($1); }
-  | OP_LE { $$ = nodo_hoja($1); } | OP_GE { $$ = nodo_hoja($1); }
-  | OP_AND { $$ = nodo_hoja($1); } | OP_OR { $$ = nodo_hoja($1); }
-  | OP_NOT { $$ = nodo_hoja($1); } | OP_AMP { $$ = nodo_hoja($1); }
-  | DELIM_SEMI { $$ = nodo_hoja($1); } | DELIM_COMMA { $$ = nodo_hoja($1); }
-  | DELIM_LPAREN { $$ = nodo_hoja($1); } | DELIM_RPAREN { $$ = nodo_hoja($1); }
+/* ============================= Declaraciones ============================= */
+
+declaracion
+  : declaracion_sin_pyc DELIM_SEMI {
+      $$ = $1;
+      nodo_agregar($$, nodo_hoja($2));
+    }
+  ;
+
+declaracion_sin_pyc
+  : tipo lista_declaradores {
+      $$ = nodo_nuevo("declaracion", @1.first_line, @1.first_column);
+      nodo_agregar($$, $1);
+      nodo_agregar($$, $2);
+    }
+  ;
+
+tipo
+  : KW_INT   { $$ = nodo_nuevo("tipo", @1.first_line, @1.first_column); nodo_agregar($$, nodo_hoja($1)); }
+  | KW_FLOAT { $$ = nodo_nuevo("tipo", @1.first_line, @1.first_column); nodo_agregar($$, nodo_hoja($1)); }
+  | KW_CHAR  { $$ = nodo_nuevo("tipo", @1.first_line, @1.first_column); nodo_agregar($$, nodo_hoja($1)); }
+  | KW_BOOL  { $$ = nodo_nuevo("tipo", @1.first_line, @1.first_column); nodo_agregar($$, nodo_hoja($1)); }
+  ;
+
+lista_declaradores
+  : declarador {
+      $$ = nodo_nuevo("lista_declaradores", @1.first_line, @1.first_column);
+      nodo_agregar($$, $1);
+    }
+  | lista_declaradores DELIM_COMMA declarador {
+      $$ = $1;
+      nodo_agregar($$, nodo_hoja($2));
+      nodo_agregar($$, $3);
+    }
+  ;
+
+declarador
+  : IDENT {
+      $$ = nodo_nuevo("declarador", @1.first_line, @1.first_column);
+      nodo_agregar($$, nodo_hoja($1));
+    }
+  | IDENT OP_ASSIGN expresion {
+      $$ = nodo_nuevo("declarador", @1.first_line, @1.first_column);
+      nodo_agregar($$, nodo_hoja($1));
+      nodo_agregar($$, nodo_hoja($2));
+      nodo_agregar($$, $3);
+    }
+  ;
+
+/* ============== Sentencias (resolución formal de Dangling-Else) ========== */
+
+sentencia
+  : sent_emparejada    { $$ = $1; }
+  | sent_no_emparejada { $$ = $1; }
+  ;
+
+sent_emparejada
+  : KW_IF DELIM_LPAREN expresion DELIM_RPAREN sent_emparejada KW_ELSE sent_emparejada {
+      $$ = nodo_if_else($1, $2, $3, $4, $5, $6, $7);
+    }
+  | KW_WHILE DELIM_LPAREN expresion DELIM_RPAREN sent_emparejada {
+      $$ = nodo_while($1, $2, $3, $4, $5);
+    }
+  | KW_FOR DELIM_LPAREN for_init DELIM_SEMI for_cond DELIM_SEMI for_act DELIM_RPAREN sent_emparejada {
+      $$ = nodo_for($1, $2, $3, $4, $5, $6, $7, $8, $9);
+    }
+  | sent_simple { $$ = $1; }
+  ;
+
+sent_no_emparejada
+  : KW_IF DELIM_LPAREN expresion DELIM_RPAREN sentencia {
+      $$ = nodo_nuevo("sent_if", @1.first_line, @1.first_column);
+      nodo_agregar($$, nodo_hoja($1));
+      nodo_agregar($$, nodo_hoja($2));
+      nodo_agregar($$, $3);
+      nodo_agregar($$, nodo_hoja($4));
+      nodo_agregar($$, $5);
+    }
+  | KW_IF DELIM_LPAREN expresion DELIM_RPAREN sent_emparejada KW_ELSE sent_no_emparejada {
+      $$ = nodo_if_else($1, $2, $3, $4, $5, $6, $7);
+    }
+  | KW_WHILE DELIM_LPAREN expresion DELIM_RPAREN sent_no_emparejada {
+      $$ = nodo_while($1, $2, $3, $4, $5);
+    }
+  | KW_FOR DELIM_LPAREN for_init DELIM_SEMI for_cond DELIM_SEMI for_act DELIM_RPAREN sent_no_emparejada {
+      $$ = nodo_for($1, $2, $3, $4, $5, $6, $7, $8, $9);
+    }
+  ;
+
+sent_simple
+  : bloque         { $$ = $1; }
+  | sent_expresion { $$ = $1; }
+  | sent_printf    { $$ = $1; }
+  | sent_scanf     { $$ = $1; }
+  | sent_return    { $$ = $1; }
+  ;
+
+for_init
+  : %empty              { $$ = nodo_nuevo("for_init", 0, 0); }
+  | declaracion_sin_pyc { $$ = nodo_nuevo("for_init", @1.first_line, @1.first_column); nodo_agregar($$, $1); }
+  | expresion           { $$ = nodo_nuevo("for_init", @1.first_line, @1.first_column); nodo_agregar($$, $1); }
+  ;
+
+for_cond
+  : %empty    { $$ = nodo_nuevo("for_cond", 0, 0); }
+  | expresion { $$ = nodo_nuevo("for_cond", @1.first_line, @1.first_column); nodo_agregar($$, $1); }
+  ;
+
+for_act
+  : %empty    { $$ = nodo_nuevo("for_act", 0, 0); }
+  | expresion { $$ = nodo_nuevo("for_act", @1.first_line, @1.first_column); nodo_agregar($$, $1); }
+  ;
+
+sent_expresion
+  : expresion DELIM_SEMI {
+      $$ = nodo_nuevo("sent_expresion", @1.first_line, @1.first_column);
+      nodo_agregar($$, $1);
+      nodo_agregar($$, nodo_hoja($2));
+    }
+  | DELIM_SEMI {
+      $$ = nodo_nuevo("sent_vacia", @1.first_line, @1.first_column);
+      nodo_agregar($$, nodo_hoja($1));
+    }
+  ;
+
+sent_return
+  : KW_RETURN expresion DELIM_SEMI {
+      $$ = nodo_nuevo("sent_return", @1.first_line, @1.first_column);
+      nodo_agregar($$, nodo_hoja($1));
+      nodo_agregar($$, $2);
+      nodo_agregar($$, nodo_hoja($3));
+    }
+  | KW_RETURN DELIM_SEMI {
+      $$ = nodo_nuevo("sent_return", @1.first_line, @1.first_column);
+      nodo_agregar($$, nodo_hoja($1));
+      nodo_agregar($$, nodo_hoja($2));
+    }
+  ;
+
+/* ========================= Entrada / Salida (E/S) ======================== */
+
+sent_printf
+  : KW_PRINTF DELIM_LPAREN LIT_STRING opt_args_printf DELIM_RPAREN DELIM_SEMI {
+      $$ = nodo_nuevo("sent_printf", @1.first_line, @1.first_column);
+      nodo_agregar($$, nodo_hoja($1));
+      nodo_agregar($$, nodo_hoja($2));
+      nodo_agregar($$, nodo_hoja($3));
+      nodo_agregar($$, $4);
+      nodo_agregar($$, nodo_hoja($5));
+      nodo_agregar($$, nodo_hoja($6));
+    }
+  ;
+
+opt_args_printf
+  : %empty                         { $$ = nodo_nuevo("args_printf", 0, 0); }
+  | DELIM_COMMA lista_args_printf  { $$ = $2; }
+  ;
+
+lista_args_printf
+  : arg_printf {
+      $$ = nodo_nuevo("args_printf", @1.first_line, @1.first_column);
+      nodo_agregar($$, $1);
+    }
+  | lista_args_printf DELIM_COMMA arg_printf {
+      $$ = $1;
+      nodo_agregar($$, nodo_hoja($2));
+      nodo_agregar($$, $3);
+    }
+  ;
+
+arg_printf
+  : expresion  { $$ = $1; }
+  | LIT_STRING { $$ = nodo_hoja($1); }
+  ;
+
+sent_scanf
+  : KW_SCANF DELIM_LPAREN LIT_STRING opt_args_scanf DELIM_RPAREN DELIM_SEMI {
+      $$ = nodo_nuevo("sent_scanf", @1.first_line, @1.first_column);
+      nodo_agregar($$, nodo_hoja($1));
+      nodo_agregar($$, nodo_hoja($2));
+      nodo_agregar($$, nodo_hoja($3));
+      nodo_agregar($$, $4);
+      nodo_agregar($$, nodo_hoja($5));
+      nodo_agregar($$, nodo_hoja($6));
+    }
+  ;
+
+opt_args_scanf
+  : %empty                        { $$ = nodo_nuevo("args_scanf", 0, 0); }
+  | DELIM_COMMA lista_args_scanf  { $$ = $2; }
+  ;
+
+lista_args_scanf
+  : arg_scanf {
+      $$ = nodo_nuevo("args_scanf", @1.first_line, @1.first_column);
+      nodo_agregar($$, $1);
+    }
+  | lista_args_scanf DELIM_COMMA arg_scanf {
+      $$ = $1;
+      nodo_agregar($$, nodo_hoja($2));
+      nodo_agregar($$, $3);
+    }
+  ;
+
+arg_scanf
+  : OP_AMP IDENT {
+      $$ = nodo_nuevo("arg_dir", @1.first_line, @1.first_column);
+      nodo_agregar($$, nodo_hoja($1));
+      nodo_agregar($$, nodo_hoja($2));
+    }
+  | expresion { $$ = $1; }
+  ;
+
+/* ============== Expresiones (menor a mayor precedencia) ================== */
+
+expresion
+  : exp_asignacion { $$ = $1; }
+  ;
+
+/* Nivel 1 (menor precedencia): asignación, asociativa por la derecha. */
+exp_asignacion
+  : IDENT op_asignacion exp_asignacion {
+      $$ = nodo_nuevo("exp_asignacion", @1.first_line, @1.first_column);
+      nodo_agregar($$, nodo_hoja($1));
+      nodo_agregar($$, $2);
+      nodo_agregar($$, $3);
+    }
+  | exp_or { $$ = $1; }
+  ;
+
+op_asignacion
+  : OP_ASSIGN     { $$ = nodo_hoja($1); }
+  | OP_ADD_ASSIGN { $$ = nodo_hoja($1); }
+  | OP_SUB_ASSIGN { $$ = nodo_hoja($1); }
+  | OP_MUL_ASSIGN { $$ = nodo_hoja($1); }
+  | OP_DIV_ASSIGN { $$ = nodo_hoja($1); }
+  ;
+
+/* Nivel 2: OR lógico (||), asociativo por la izquierda. */
+exp_or
+  : exp_or OP_OR exp_and { $$ = nodo_binario("exp_or", $1, $2, $3); }
+  | exp_and              { $$ = $1; }
+  ;
+
+/* Nivel 3: AND lógico (&&), asociativo por la izquierda. */
+exp_and
+  : exp_and OP_AND exp_igualdad { $$ = nodo_binario("exp_and", $1, $2, $3); }
+  | exp_igualdad                { $$ = $1; }
+  ;
+
+/* Nivel 4: Igualdad (==, !=), asociativo por la izquierda. */
+exp_igualdad
+  : exp_igualdad OP_EQ exp_relacional { $$ = nodo_binario("exp_igualdad", $1, $2, $3); }
+  | exp_igualdad OP_NE exp_relacional { $$ = nodo_binario("exp_igualdad", $1, $2, $3); }
+  | exp_relacional                    { $$ = $1; }
+  ;
+
+/* Nivel 5: Relacionales (<, <=, >, >=), asociativo por la izquierda. */
+exp_relacional
+  : exp_relacional OP_LT exp_aditiva { $$ = nodo_binario("exp_relacional", $1, $2, $3); }
+  | exp_relacional OP_LE exp_aditiva { $$ = nodo_binario("exp_relacional", $1, $2, $3); }
+  | exp_relacional OP_GT exp_aditiva { $$ = nodo_binario("exp_relacional", $1, $2, $3); }
+  | exp_relacional OP_GE exp_aditiva { $$ = nodo_binario("exp_relacional", $1, $2, $3); }
+  | exp_aditiva                      { $$ = $1; }
+  ;
+
+/* Nivel 6: Aditivos (+, -), asociativo por la izquierda. */
+exp_aditiva
+  : exp_aditiva OP_PLUS exp_multiplicativa  { $$ = nodo_binario("exp_aditiva", $1, $2, $3); }
+  | exp_aditiva OP_MINUS exp_multiplicativa { $$ = nodo_binario("exp_aditiva", $1, $2, $3); }
+  | exp_multiplicativa                      { $$ = $1; }
+  ;
+
+/* Nivel 7: Multiplicativos (*, /, %), asociativo por la izquierda. */
+exp_multiplicativa
+  : exp_multiplicativa OP_MUL exp_unaria { $$ = nodo_binario("exp_multiplicativa", $1, $2, $3); }
+  | exp_multiplicativa OP_DIV exp_unaria { $$ = nodo_binario("exp_multiplicativa", $1, $2, $3); }
+  | exp_multiplicativa OP_MOD exp_unaria { $$ = nodo_binario("exp_multiplicativa", $1, $2, $3); }
+  | exp_unaria                           { $$ = $1; }
+  ;
+
+/* Nivel 8: Unarios (!, -, +), asociativo por la derecha. */
+exp_unaria
+  : OP_NOT exp_unaria   { $$ = nodo_unario("exp_unaria", $1, $2); }
+  | OP_MINUS exp_unaria { $$ = nodo_unario("exp_unaria", $1, $2); }
+  | OP_PLUS exp_unaria  { $$ = nodo_unario("exp_unaria", $1, $2); }
+  | exp_primaria        { $$ = $1; }
+  ;
+
+/* Nivel 9 (mayor precedencia): expresiones primarias y paréntesis. */
+exp_primaria
+  : IDENT     { $$ = nodo_hoja($1); }
+  | LIT_INT   { $$ = nodo_hoja($1); }
+  | LIT_FLOAT { $$ = nodo_hoja($1); }
+  | LIT_CHAR  { $$ = nodo_hoja($1); }
+  | LIT_BOOL  { $$ = nodo_hoja($1); }
+  | DELIM_LPAREN expresion DELIM_RPAREN {
+      $$ = nodo_nuevo("exp_parentesis", @1.first_line, @1.first_column);
+      nodo_agregar($$, nodo_hoja($1));
+      nodo_agregar($$, $2);
+      nodo_agregar($$, nodo_hoja($3));
+    }
   ;
 
 %%
 
 /* ------------------------- Errores sintácticos ------------------------- */
 
-/* Copia el nombre del símbolo quitando las comillas dobles del alias. */
 static void nombre_simbolo(yysymbol_kind_t k, char *buf, size_t n) {
   const char *s = (k == YYSYMBOL_YYEOF) ? "fin de archivo" : yysymbol_name(k);
   size_t len = strlen(s);
@@ -181,12 +521,11 @@ static void nombre_simbolo(yysymbol_kind_t k, char *buf, size_t n) {
   buf[len] = '\0';
 }
 
-/* Mensaje explicativo: «se esperaba X y se encontró Y» (sin modo pánico). */
 static int yyreport_syntax_error(const yypcontext_t *ctx) {
   enum { MAX_ESP = 4 };
   yysymbol_kind_t esperados[YYNTOKENS];
   int total = yypcontext_expected_tokens(ctx, esperados, YYNTOKENS);
-  int n = total < MAX_ESP ? total : MAX_ESP; /* solo se listan los primeros */
+  int n = total < MAX_ESP ? total : MAX_ESP;
   const YYLTYPE *loc = yypcontext_location(ctx);
 
   char lista[256] = "";
@@ -218,7 +557,7 @@ void yyerror(const char *s) {
   reportar_error(SYN, yylloc.first_line, yylloc.first_column, "%s", s);
 }
 
-/* -------------- Construcción del árbol (provisional, Dev 2) ------------- */
+/* ----------------------- Construcción del árbol ------------------------ */
 
 Nodo *nodo_nuevo(const char *nombre, int linea, int col) {
   Nodo *n = calloc(1, sizeof *n);
@@ -238,6 +577,7 @@ Nodo *nodo_hoja(Token *t) {
 }
 
 void nodo_agregar(Nodo *padre, Nodo *hijo) {
+  if (!padre || !hijo) return;
   if (padre->nhijos == padre->cap) {
     int cap = padre->cap ? padre->cap * 2 : 4;
     Nodo **h = realloc(padre->hijos, (size_t)cap * sizeof *h);
