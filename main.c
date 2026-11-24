@@ -20,6 +20,13 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#define CCHECK_MKDIR(ruta, modo) _mkdir(ruta)
+#else
+#define CCHECK_MKDIR(ruta, modo) mkdir((ruta), (modo))
+#endif
+
 #include "ast.h"
 #include "diag.h"
 #include "fases.h"
@@ -49,11 +56,11 @@ static int crear_directorio(const char *dir) {
   for (char *p = ruta + 1; *p; p++) {
     if (*p == '/') {
       *p = '\0';
-      if (mkdir(ruta, 0755) != 0 && errno != EEXIST) return -1;
+      if (CCHECK_MKDIR(ruta, 0755) != 0 && errno != EEXIST) return -1;
       *p = '/';
     }
   }
-  if (mkdir(ruta, 0755) != 0 && errno != EEXIST) return -1;
+  if (CCHECK_MKDIR(ruta, 0755) != 0 && errno != EEXIST) return -1;
   return 0;
 }
 
