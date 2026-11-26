@@ -91,6 +91,7 @@ static void emitir_printf(const Nodo *n, FILE *out) {
       continue;
     }
     i++;
+    if (fmt[i] == '\0') break;
     if (fmt[i] == '%') {
       strncat(salida, "%", sizeof(salida) - strlen(salida) - 1);
       continue;
@@ -134,7 +135,8 @@ static void emitir_scanf(const Nodo *n, FILE *out) {
   for (size_t i = 0; fmt[i] != '\0'; i++) {
     if (fmt[i] != '%') continue;
     i++;
-    if (fmt[i] == '%' || fmt[i] == '\0') continue;
+    if (fmt[i] == '\0') break;
+    if (fmt[i] == '%') continue;
 
     const char *tipo_txt = (fmt[i] == 'd') ? "int"
                          : (fmt[i] == 'f') ? "float"

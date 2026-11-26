@@ -185,6 +185,7 @@ static void validar_sent_printf(SemCtx *ctx, Nodo *n) {
         reportar_error(SEM, n->linea, n->col,
                        "printf: especificador de formato '%%%c' no soportado",
                        fmt[i]);
+        arg_i++;
         continue;
     }
 
@@ -193,12 +194,17 @@ static void validar_sent_printf(SemCtx *ctx, Nodo *n) {
       reportar_error(SEM, n->linea, n->col,
                      "printf: faltan argumentos para el especificador '%%%c'",
                      fmt[i]);
-    } else if (tipos_arg[arg_i] != TIPO_ERROR && tipos_arg[arg_i] != esperado) {
-      ctx->errores++;
-      reportar_error(SEM, args[arg_i]->linea, args[arg_i]->col,
-                     "printf: especificador '%%%c' espera '%s', pero el argumento %d es '%s'",
-                     fmt[i], tipo_a_cadena(esperado), arg_i + 1,
-                     tipo_a_cadena(tipos_arg[arg_i]));
+    } else if (tipos_arg[arg_i] != TIPO_ERROR) {
+      /* Decisión A13: un bool se imprime con %d en printf. */
+      bool compatible = (tipos_arg[arg_i] == esperado) ||
+                        (fmt[i] == 'd' && tipos_arg[arg_i] == TIPO_BOOL);
+      if (!compatible) {
+        ctx->errores++;
+        reportar_error(SEM, args[arg_i]->linea, args[arg_i]->col,
+                       "printf: especificador '%%%c' espera '%s', pero el argumento %d es '%s'",
+                       fmt[i], (fmt[i] == 'd') ? "int' o 'bool" : tipo_a_cadena(esperado),
+                       arg_i + 1, tipo_a_cadena(tipos_arg[arg_i]));
+      }
     }
     arg_i++;
   }
@@ -253,6 +259,7 @@ static void validar_sent_scanf(SemCtx *ctx, Nodo *n) {
         reportar_error(SEM, n->linea, n->col,
                        "scanf: especificador de formato '%%%c' no soportado",
                        fmt[i]);
+        arg_i++;
         continue;
     }
 
@@ -584,7 +591,13 @@ static void visitar(SemCtx *ctx, Nodo *n) {
 
   if (es_nodo(n, "sent_for") && n->nhijos == 9) {
     symtab_enter_scope(&ctx->ts);
-    if (n->hijos[2] && n->hijos[2]->nhijos > 0) visitar(ctx, n->hijos[2]->hijos[0]);
+    if (n->hijos[2] && n->hijos[2]->nhijos > 0) {
+      Nodo *init = n->hijos[2]->hijos[0];
+      if (es_nodo(init, "declaracion"))
+        visitar(ctx, init);
+      else
+        eval_expr(ctx, init);
+    }
     if (n->hijos[4] && n->hijos[4]->nhijos > 0) {
       TipoDato tc = eval_expr(ctx, n->hijos[4]->hijos[0]);
       if (tc != TIPO_ERROR && tc != TIPO_BOOL) {

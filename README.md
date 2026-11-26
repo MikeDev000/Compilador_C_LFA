@@ -19,8 +19,8 @@ Instalación: `sudo pacman -S gcc make flex bison graphviz` (Arch) ·
 ## Compilar
 
 ```bash
-make            # compila ./ccheck (usa stubs.c para Dev 3/Dev 4 mientras no estén)
-make STUBS=0    # compila con semantico.c, interp.c y arbol.c reales
+make            # compila ./ccheck con todas las fases reales (STUBS=0)
+make STUBS=1    # opcional: compila usando stubs.c para Dev 3/Dev 4
 make clean      # borra binario y archivos generados por Flex/Bison
 ```
 
@@ -70,9 +70,9 @@ Makefile, README.md            Dev 1
 token.h token.c diag.h diag.c  Dev 1  (interfaces + implementación)
 lexer.l                        Dev 1  (Fase 1)
 main.c fases.h                 Dev 1  (driver + contratos con Dev 2/3/4)
-stubs.c                        Dev 1  (provisional: Fase 3 y árbol)
-parser.y ast.h                 Dev 2  (Fase 2)  ← versión PROVISIONAL de Dev 1
-semantico.c interp.c types.h symtab.h   Dev 3  (Fase 3)
+stubs.c                        Dev 1  (provisional opcional: make STUBS=1)
+parser.y ast.h                 Dev 2  (Fase 2: GLC LALR(1) sin conflictos)
+semantico.c interp.c types.h symtab.h symtab.c   Dev 3  (Fase 3)
 arbol.c                        Dev 4  (árbol a texto/Graphviz)
 pruebas/                       casos de prueba (pruebas/dev1/: casos del lexer)
 salidas/                       reportes generados

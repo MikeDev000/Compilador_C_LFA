@@ -27,6 +27,7 @@ int main() {
     }
 
     promedio = acumulado / 2.0;
-    printf("Inicial: %c, Acumulado: %d, Promedio: %f\n", inicial, acumulado, promedio);
+    printf("Estado %s (100%%): Activo=%d, Inicial=%c, Acumulado=%d, Promedio=%f\n",
+           "OK", activo, inicial, acumulado, promedio);
     return 0;
 }

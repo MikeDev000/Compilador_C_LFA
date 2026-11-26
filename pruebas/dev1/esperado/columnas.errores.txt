@@ -1,1 +1,7 @@
-Análisis completado: sin errores léxicos, sintácticos ni semánticos
+pruebas/dev1/columnas.c:6:5: error[SEM]: variable 'x' no declarada
+pruebas/dev1/columnas.c:6:23: error[SEM]: variable 'x' no declarada
+pruebas/dev1/columnas.c:6:31: error[SEM]: variable 'x' no declarada
+pruebas/dev1/columnas.c:7:9: error[SEM]: variable 'x' no declarada
+pruebas/dev1/columnas.c:7:25: error[SEM]: variable 'x' no declarada
+pruebas/dev1/columnas.c:7:54: error[SEM]: variable 'x' no declarada
+pruebas/dev1/columnas.c:8:18: error[SEM]: scanf: variable 'x' no declarada

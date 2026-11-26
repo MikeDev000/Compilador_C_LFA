@@ -1,7 +1,7 @@
 # Makefile — ccheck (Dueño: Dev 1)
 #
-#   make                 compila ccheck (con stubs de Dev 3/Dev 4)
-#   make STUBS=0         compila con semantico.c, interp.c y arbol.c reales
+#   make                 compila ccheck con todas las fases reales (STUBS=0)
+#   make STUBS=1         compila usando stubs.c en lugar de Dev 3/Dev 4
 #   make run FILE=x.c    ejecuta ccheck sobre x.c (salidas en salidas/)
 #   make test            corre todos los casos de pruebas/ (salidas/<caso>/)
 #   make test-lexer      compara tokens.txt y errores.txt de los casos de Dev 1
@@ -10,10 +10,16 @@
 
 CC      = gcc
 CFLAGS  = -std=c11 -Wall -Wextra -g -D_POSIX_C_SOURCE=200809L
-BISON   = bison
+ifneq ($(wildcard /opt/homebrew/opt/bison/bin/bison),)
+  BISON ?= /opt/homebrew/opt/bison/bin/bison
+else ifneq ($(wildcard /usr/local/opt/bison/bin/bison),)
+  BISON ?= /usr/local/opt/bison/bin/bison
+else
+  BISON ?= bison
+endif
 FLEX    = flex
 BIN     = ccheck
-STUBS  ?= 1
+STUBS  ?= 0
 FILE   ?= entrada.c
 OUT    ?= salidas
 
