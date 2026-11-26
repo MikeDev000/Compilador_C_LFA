@@ -21,11 +21,11 @@ SRC = main.c diag.c token.c
 ifeq ($(STUBS),1)
   SRC += stubs.c
 else
-  SRC += semantico.c interp.c arbol.c
+  SRC += symtab.c semantico.c interp.c arbol.c
 endif
 
 OBJ  = $(SRC:.c=.o) parser.tab.o lex.yy.o
-HDRS = token.h diag.h ast.h fases.h parser.tab.h
+HDRS = token.h diag.h ast.h fases.h types.h symtab.h parser.tab.h
 
 .PHONY: all run test test-lexer dot clean
 
